@@ -1,128 +1,96 @@
----
+# IPFS Tunnels Manager
 
-# IPFS Tunnels Operator 🚀
-
-`IPFS Tunnels Operator` 是一个基于 Rust 编写的、采用声明式（Declarative）架构的 IPFS P2P 隧道守护进程。它类似于 Kubernetes 的 Controller 模式，通过不断比对“用户期望状态（Desired State）”与“网关实际状态（Actual State）”，自动执行增量调和（Reconcile），确保 P2P 转发与监听拓扑的最终一致性。
-
-支持跨平台的安全优雅停机，并具备生产级的抗漂移、高并发错误指数退避与事务性回滚机制。
+IPFS Tunnels Manager 是一个基于声明式设计（Declarative Architecture）的 IPFS P2P 隧道编排守护进程。它参考了类似于 Kubernetes 的调和循环（Reconcile Loop）思想，通过周期性审查与文件热更新驱动，自动使 IPFS 节点当前的实际隧道状态（Actual State）向配置文件定义的期望状态（Desired State）逼近并最终完全收敛。
 
 ---
 
-## 核心特性 ✨
+## 核心特性
 
-* **声明式拓扑对齐 (Declarative Reconciliation)**：
-通过配置文件定义隧道，Operator 自动发现未就绪隧道、清理陈旧残留、下线禁用路由。
-* **双角色支持 (Client / Server)**：
-完美映射并统一调度 IPFS 的 `p2p forward` (Client 模式) 与 `p2p listen` (Server 模式)。
-* **事务性更新与紧急回滚 (Transactional Rollback)**：
-配置变更或现网漂移时，采用先下线旧路由、再挂载新路由的事务性逻辑。若新配置激活失败，将触发自动紧急回滚，防止隧道处于悬挂损毁状态。
-* **主动防漂移时钟 (Anti-Drift Clock)**：
-除支持配置文件热更新（Hot-Reload）触发外，内置 60 秒例行周期审查，强力纠正外部手动干预导致的拓扑漂移。
-* **生产级健壮性设计**：
-* **Pre-flight 拦截**：下线配置前进行静态本地端口冲突校验，杜绝冲突配置下发。
-* **安全指数退避**：网络瞬时故障自动触发指数退避重试，并使用硬限幅（上限 30s）配合安全的边界计算，防止高并发重试时时间溢出。
-
-
-* **优雅停机与跨平台信号包装 (Cancellation Safety)**：
-统一封装跨平台信号拦截，Unix（SIGINT/SIGTERM）与 Windows（Ctrl+C）均可实现进程安全排空并平稳退出。
+* **双角色模式支持**：完整支持客户端模式（Client / `p2p forward`）与服务端模式（Server / `p2p listen`）。
+* **自动状态调和**：自动挂载新隧道、清理陈旧废弃隧道、安全下线禁用隧道。
+* **配置热重载（Hot-Reload）**：基于异步文件事件监听，检测到配置文件修改后立即触发增量调和，无需重启进程。
+* **防漂移审查（Anti-Drift）**：内置每 60 秒一次的例行健康度审查，防止因外部因素导致的网络拓扑漂移。
+* **鲁棒事务与回滚**：当配置更新失败时，系统提供事务性紧急回滚能力，尽可能将隧道恢复至变更前的可用状态。
+* **指数退避重试**：针对瞬时网络故障提供指数退避重试机制，并设有一致性的最大延迟硬限幅，防止高并发下时间戳计算溢出。
+* **跨平台安全优雅退出**：完美兼容 Linux（SIGINT/SIGTERM）与 Windows（Ctrl+C）系统的信号中断，保障退出时内存与网络连接的安全平稳排空。
 
 ---
 
-## 架构原理 🧭
+## 配置文件说明
 
-1. **事件触发**：由 `notify` 文件修改事件（热更新）或 `tokio::time::interval`（定时防漂移）向核心事件循环发送 `TriggerEvent`。
-2. **状态收集**：解析 `tunnels.conf` 获取 Desired 状态；通过 IPFS RPC (`/api/v0/p2p/ls`) 解析并鉴别 Actual 状态。
-3. **并发调和**：使用 `futures::stream::buffer_unordered` 并发（上限 10）处理每一个协议隧道的生命周期状态机，计算差异并按需调用 IPFS 接口。
+程序启动时，会在系统默认的配置目录下（例如 Linux 下的 `~/.config/ipfs-tunnels/` 或 Windows 的 AppData 对应目录）自动生成默认的规范化配置文件 `tunnels.conf`。
 
----
+### 配置格式
 
-## 配置文件规范 📝
-
-配置文件路径默认为：`~/.config/ipfs-tunnels/tunnels.conf`（若不存在，启动时会自动生成模板）。
-配置采用 **7 列严格规范格式**，以 `|` 作为分隔符。
+配置文件采用 7 列竖线（`|`）分隔的扁平文本设计，支持使用 `#` 进行单行注释：
 
 ```text
-# name       | mode   | local_ip  | port  | peer_id     | protocol     | enabled
-mc_client    | client | 127.0.0.1 | 25565 | 12D3Koo...  | /x/minecraft | true
-ssh_server   | server | 127.0.0.1 | 22    | -           | /x/ssh       | true
+# name | mode | local_ip | port | peer_id | protocol | enabled
+mc_client  | client | 127.0.0.1 | 25565 | 12D3Koo... | /x/minecraft | true
+ssh_server | server | 127.0.0.1 | 22    | -          | /x/ssh       | true
 
 ```
 
-### 字段说明：
+### 字段详解
 
-* **name**: 隧道别名，用于日志追踪与可读性。
-* **mode**: 角色模式。可选 `client`（执行 forward 转发）或 `server`（执行 listen 监听）。
-* **local_ip**: 本地监听或绑定的 IP 地址（支持 IPv4 / IPv6）。
-* **port**: 本地静态映射端口。**全局不可重复占用。**
-* **peer_id**: 对端的 IPFS PeerID。在 `server` 模式下无需填写，使用 `-` 占位即可。
-* **protocol**: P2P 协议标识符路径（必须以 `/` 开头）。
-* **enabled**: 是否启用。设为 `false` 会触发 Operator 自动安全下线该隧道。
+| 字段名 | 允许值 | 说明 |
+| --- | --- | --- |
+| **name** | 字符串 | 隧道的人类可读标识名称。 |
+| **mode** | `client` 或 `server` | 隧道的角色。`client` 对应本地端口前向转发；`server` 对应本地服务监听挂载。 |
+| **local_ip** | IPv4 / IPv6 地址 | 本地映射或监听的 IP 地址（如 `127.0.0.1`）。 |
+| **port** | 1 - 65535 | 本地映射或监听的 TCP 端口号。 |
+| **peer_id** | IPFS PeerID / `-` | 目标节点的 PeerID。在 `server` 模式下，该项通常填写 `-` 作为占位。 |
+| **protocol** | 字符串 | 唯一的 P2P 协议流路径（必须以 `/` 开头，如 `/x/ssh`）。作为核心主键使用。 |
+| **enabled** | `true` 或 `false` | 是否启用该隧道。设为 `false` 时，调和器会自动在现网中将其关闭下线。 |
 
 ---
 
-## 编译与运行 🛠️
+## 运行环境要求
 
-### 前提条件
+1. **IPFS Daemon**：必须在本机运行 IPFS 节点，且其 RPC API 地址（默认 `http://127.0.0.1:5001`）需保持畅通。
+2. **Rust 工具链**：编译需要 Rust 2021 edition 或更高版本。
 
-1. 已安装 [Rust 工具链](https://rustup.rs/) (Cargo & rustc)。
-2. 本地正在运行 IPFS Daemon，且 RPC 接口默认开启在 `http://127.0.0.1:5001`。
+---
 
-### 编译项目
+## 快速开始
+
+### 1. 克隆并编译项目
 
 ```bash
+git clone https://github.com/your-username/ipfs-tunnels-manager.git
+cd ipfs-tunnels-manager
 cargo build --release
 
 ```
 
-### 运行守护进程
+### 2. 启动服务
 
-可以直接通过 Cargo 运行，或将编译产物作为 Systemd / 守护服务挂载：
+直接运行编译后的二进制程序：
 
 ```bash
-# 默认读取或生成 ~/.config/ipfs-tunnels/tunnels.conf
-RUST_LOG=info cargo run
+cargo run --release
+
+```
+
+首次运行会在控制台提示创建默认模版配置。可以根据输出的路径找到 `tunnels.conf` 并编辑添加隧道配置。
+
+### 3. 日志诊断
+
+项目支持通过 `RUST_LOG` 环境变量动态解析复杂的过滤规则。默认输出 `info` 级别日志：
+
+```bash
+# 开启 debug 级别日志以观察调和循环细节
+RUST_LOG=ipfs_tunnels_manager=debug,reconciler=debug ./target/release/ipfs-tunnels-manager
 
 ```
 
 ---
 
-## 日志追踪样例 📋
+## 架构简述
 
-**开机初次对齐与热更新：**
+系统核心事件循环采用 Tokio 的异步选择多路复用驱动：
 
-```text
-INFO  ipfs_tunnels_operator: 🚀 IPFS Tunnels Operator 正在作为守护进程启动...
-INFO  ipfs_tunnels_operator: 执行开机初次声明式拓扑对齐...
-INFO  reconcile_loop{protocol="/x/minecraft"}: 发现未就绪隧道，正在创建... tunnel_name=mc_client mode=Client
-INFO  reconcile_loop{protocol="/x/minecraft"}: 隧道成功挂载
-INFO  ipfs_tunnels_operator: ✅ 声明式拓扑状态成功进入完全收敛收尾。
-INFO  ipfs_tunnels_operator: ⚡ 检测到 tunnels.conf 配置文件热更新，开始触发增量调和...
-WARN  reconcile_loop{protocol="/x/minecraft"}: ⚠️ 检测到配置存在漂移！启动事务性更新... tunnel_name=mc_client
-
-```
-
-**优雅停机：**
-
-```text
-^CWARN  ipfs_tunnels_operator::signals: 🛑 接收到 SIGINT (Ctrl+C) 终止信号。执行 Cancellation Safety 保护退出...
-INFO  ipfs_tunnels_operator: ✨ P2P Tunnel Operator 进程已安全优雅排空并平稳退出。
-
-```
-
----
-
-## 项目结构 📁
-
-* `main.rs`: 守护进程的驱动核心，调度异步事件循环（Event Loop）与热加载。
-* `config.rs`: 负责 7 列配置文件的声明式解析、校验以及模板自生成。
-* `models.rs`: 统一的内部领域模型（`DesiredTunnel` / `ActualTunnel`）和 IPFS 响应反序列化结构。
-* `ipfs.rs`: 封装面向 IPFS RPC 接口的底层 HTTP 客户端，内置安全的指数退避重试网络代理。
-* `reconciler.rs`: 控制面核心。高并发计算拓扑差异，编排创建、下线、禁用清理及回滚事务。
-* `error.rs`: 基于 `thiserror` 定义的错误枚举，明确区分可重试网络故障与致命配置拒绝。
-* `signals.rs`: 跨平台的系统信号拦截器，保障多平台底层的优雅停机行为一致。
-
----
-
-## License 📄
-
-本项目遵循开源社区规范，基于明晰的开放源代码精神构建。详情请参阅项目中的 LICENSE 文件。
+* **开机初始化**：检查 IPFS 守护进程健康度，若离线则拒绝初始化。首次开机执行一次强制性声明式拓扑全量对齐。
+* **文件变更通道**：通过 `notify` 监听文件事件，当 `tunnels.conf` 触发 `Modify` 或 `Create` 时，向主事件循环发送 `TriggerEvent::FileChanged` 信号。
+* **定时器通道**：由独立异步任务驱动，每 60 秒发送一次 `TriggerEvent::PeriodicTick` 信号，用于防漂移同步。
+* **预检查拦截（Pre-flight Check）**：在下发任何调和命令前，系统会静态扫描期望配置中是否存在本地端口冲突，若存在则直接熔断中止该轮调和，确保安全。
