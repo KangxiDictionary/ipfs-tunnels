@@ -1,0 +1,48 @@
+{
+    "id" : "org.gnome.Example",
+    "runtime" : "org.freedesktop.Platform",
+    "runtime-version" : "25.08",
+    "sdk" : "org.freedesktop.Sdk",
+    "sdk-extensions" : [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command" : "ipfs-tunnels-manager",
+    "finish-args" : [],
+    "build-options" : {
+        "append-path" : "/usr/lib/sdk/rust-stable/bin",
+        "build-args" : [
+            "--share=network"
+        ],
+        "env" : {
+            "RUST_BACKTRACE" : "1",
+            "RUST_LOG" : "ipfs-tunnels-manager=debug"
+        }
+    },
+    "cleanup" : [
+        "/include",
+        "/lib/pkgconfig",
+        "/man",
+        "/share/doc",
+        "/share/gtk-doc",
+        "/share/man",
+        "/share/pkgconfig",
+        "*.la",
+        "*.a"
+    ],
+    "modules" : [
+        {
+            "name" : "ipfs-tunnels-manager",
+            "builddir" : true,
+            "buildsystem" : "meson",
+            "sources" : [
+                {
+                    "type" : "git",
+                    "url" : "file:///home/kangxi/Projects"
+                }
+            ],
+            "config-opts" : [
+                "--libdir=lib"
+            ]
+        }
+    ]
+}

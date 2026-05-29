@@ -1,0 +1,19 @@
+[package]
+name = "ipfs-tunnels-manager"
+version = "0.6.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures = "0.3"
+thiserror = "1.0"
+tracing = "0.1"
+# 替换基础 subscriber，支持从 RUST_LOG 动态解析复杂的过滤规则
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+dirs = "5.0"
+anyhow = "1.0"
+# 引入异步文件事件监听
+notify = "6.1"
