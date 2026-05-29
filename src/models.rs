@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::net::IpAddr;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +39,15 @@ pub struct IpfsListener {
 
 #[derive(Deserialize, Debug)]
 pub struct IpfsP2pLsResponse {
-    #[serde(rename = "Listeners", default)]
+    #[serde(rename = "Listeners", deserialize_with = "deserialize_null_to_empty")]
     pub listeners: Vec<IpfsListener>,
+}
+
+// 💡 辅助反序列化函数：如果 IPFS 返回 null，将其安全转为空的 Vec
+fn deserialize_null_to_empty<'de, D>(deserializer: D) -> Result<Vec<IpfsListener>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<Vec<IpfsListener>>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_default())
 }

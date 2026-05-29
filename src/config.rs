@@ -62,3 +62,95 @@ pub fn load_desired_state(config_file: &PathBuf) -> anyhow::Result<HashMap<Strin
     }
     Ok(map)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::TunnelMode;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // 辅助函数：利用时间戳在系统临时目录下生成一个唯一的测试路径
+    fn get_temp_config_path() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("tunnels_test_{}.conf", nanos))
+    }
+
+    #[test]
+    fn test_ensure_config_exists_creates_file() {
+        let config_path = get_temp_config_path();
+
+        // 首次调用：应该创建文件并写入模板
+        assert!(ensure_config_exists(&config_path).is_ok());
+        assert!(config_path.exists());
+
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("mc_client"));
+        assert!(content.contains("ssh_server"));
+
+        // 二次调用：不应该覆盖或报错
+        assert!(ensure_config_exists(&config_path).is_ok());
+
+        // 清理现场
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn test_load_desired_state_success() {
+        let config_path = get_temp_config_path();
+
+        let mock_config = "\
+# 正确的客户端配置
+test_cli | client | 192.168.1.5 | 8080 | QmPeerId123 | /x/http | true
+# 正确的服务端配置
+test_srv | server | 127.0.0.1   | 9090 | -           | /x/grpc | false
+";
+        fs::write(&config_path, mock_config).unwrap();
+
+        let state = load_desired_state(&config_path).unwrap();
+
+        assert_eq!(state.len(), 2);
+
+        let cli = state.get("/x/http").unwrap();
+        assert_eq!(cli.name, "test_cli");
+        assert_eq!(cli.mode, TunnelMode::Client);
+        assert_eq!(cli.port, 8080);
+        assert_eq!(cli.peer_id, "QmPeerId123");
+        assert!(cli.enabled);
+
+        let srv = state.get("/x/grpc").unwrap();
+        assert_eq!(srv.mode, TunnelMode::Server);
+        assert_eq!(srv.port, 9090);
+        assert_eq!(srv.peer_id, "-");
+        assert!(!srv.enabled);
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn test_load_desired_state_malformed_skips() {
+        let config_path = get_temp_config_path();
+
+        let mock_config = "\
+# 错误1：只有 6 列（旧版格式）
+old_tunnel | 127.0.0.1 | 22 | - | /x/ssh | true
+# 错误2：Mode 填错了
+bad_mode   | unknown | 127.0.0.1 | 80 | - | /x/http | true
+# 错误3：IP 无法解析
+bad_ip     | client  | 999.9.9.9 | 80 | Qm123 | /x/web | true
+# 正确的夹杂在中间
+good_one   | client  | 10.0.0.1  | 443 | Qm443 | /x/https | true
+";
+        fs::write(&config_path, mock_config).unwrap();
+
+        let state = load_desired_state(&config_path).unwrap();
+
+        assert_eq!(state.len(), 1);
+        assert!(state.contains_key("/x/https"));
+
+        let _ = fs::remove_file(config_path);
+    }
+}
