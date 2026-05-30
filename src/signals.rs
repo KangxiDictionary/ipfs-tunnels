@@ -1,7 +1,5 @@
-use tracing::warn;
+use tracing::info;
 
-/// 统一的跨平台信号等待拦截器
-/// 在 Unix 上同时监听 SIGINT 和 SIGTERM；在 Windows 上监听 Ctrl+C (SIGINT)。
 pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -13,10 +11,10 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
 
         tokio::select! {
             _ = sigterm.recv() => {
-                warn!("🛑 接收到 SIGTERM 系统终止指令。执行 Operator 安全下线程序...");
+                info!("接收到 SIGTERM 信号，正在准备安全退出...");
             }
             _ = &mut sigint => {
-                warn!("🛑 接收到 SIGINT (Ctrl+C) 终止信号。执行 Cancellation Safety 保护退出...");
+                info!("接收到退出指令 (Ctrl+C)，正在准备安全退出...");
             }
         }
     }
@@ -24,7 +22,7 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         tokio::signal::ctrl_c().await?;
-        warn!("🛑 接收到 Ctrl+C 终止信号。执行 Operator 安全下线程序...");
+        info!("接收到退出指令 (Ctrl+C)，正在准备安全退出...");
     }
 
     Ok(())
