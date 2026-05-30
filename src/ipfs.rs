@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
 use tracing::warn;
+use multiaddr::{Multiaddr, Protocol};
 
 const IPFS_RPC_BASE: &str = "http://127.0.0.1:5001/api/v0";
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -37,8 +38,7 @@ impl IpfsClient {
                     if !e.is_retryable() || attempts <= 1 {
                         return Err(e);
                     }
-                    // 👈 动态变化的数字变成独立参数域 `remaining` 吐出
-                    warn!(error = %e, remaining = attempts - 1, "{}", tr(LogKey::NetworkRetry));
+                    warn!(error = ?e, "{}", tr(LogKey::NetworkRetry));
                     tokio::time::sleep(delay).await;
                     attempts -= 1;
                     delay = std::cmp::min(delay * 2, MAX_RETRY_DELAY);
@@ -47,48 +47,34 @@ impl IpfsClient {
         }
     }
 
-    pub async fn check_health(&self) -> Result<(), ReconcileError> {
-        let url = format!("{}/id", IPFS_RPC_BASE);
+    pub async fn p2p_forward(&self, listen: &str, target: &str, proto: &str) -> Result<(), ReconcileError> {
+        let url = format!("{}/p2p/forward?arg={}&arg={}&arg={}", IPFS_RPC_BASE, urlencoding::encode(proto), urlencoding::encode(listen), urlencoding::encode(target));
         let res = self.http.post(&url).send().await?;
         if !res.status().is_success() {
-            return Err(ReconcileError::Unavailable(format!("HTTP {}", res.status())));
+            return Err(ReconcileError::Rejected(res.text().await?));
         }
         Ok(())
     }
 
-    pub async fn p2p_close(&self, protocol: &str) -> Result<(), ReconcileError> {
-        let url = format!("{}/p2p/close", IPFS_RPC_BASE);
-        let res = self.http.post(&url).query(&[("arg", protocol)]).send().await?;
+    pub async fn p2p_listen(&self, listen: &str, proto: &str) -> Result<(), ReconcileError> {
+        let url = format!("{}/p2p/listen?arg={}&arg={}", IPFS_RPC_BASE, urlencoding::encode(proto), urlencoding::encode(listen));
+        let res = self.http.post(&url).send().await?;
         if !res.status().is_success() {
-            return Err(ReconcileError::Rejected(res.text().await.unwrap_or_default()));
+            return Err(ReconcileError::Rejected(res.text().await?));
         }
         Ok(())
     }
 
-    pub async fn p2p_forward(&self, listen: &str, target: &str, protocol: &str) -> Result<(), ReconcileError> {
-        let url = format!("{}/p2p/forward", IPFS_RPC_BASE);
-        let res = self.http.post(&url)
-            .query(&[("arg", protocol), ("arg", listen), ("arg", target)])
-            .send()
-            .await?;
+    pub async fn p2p_close(&self, proto: &str) -> Result<(), ReconcileError> {
+        let url = format!("{}/p2p/close?arg={}", IPFS_RPC_BASE, urlencoding::encode(proto));
+        let res = self.http.post(&url).send().await?;
         if !res.status().is_success() {
-            return Err(ReconcileError::Rejected(res.text().await.unwrap_or_default()));
+            return Err(ReconcileError::Unavailable(res.text().await?));
         }
         Ok(())
     }
 
-    pub async fn p2p_listen(&self, target_local: &str, protocol: &str) -> Result<(), ReconcileError> {
-        let url = format!("{}/p2p/listen", IPFS_RPC_BASE);
-        let res = self.http.post(&url)
-            .query(&[("arg", protocol), ("arg", target_local)])
-            .send().await?;
-        if !res.status().is_success() {
-            return Err(ReconcileError::Rejected(res.text().await.unwrap_or_default()));
-        }
-        Ok(())
-    }
-
-    pub async fn load_actual_state(&self) -> anyhow::Result<HashMap<String, ActualTunnel>> {
+    pub async fn load_actual_state(&self) -> Result<HashMap<String, ActualTunnel>, ReconcileError> {
         let url = format!("{}/p2p/ls", IPFS_RPC_BASE);
         let res = self.http.post(&url).send().await?;
         let ls: IpfsP2pLsResponse = res.json().await?;
@@ -97,17 +83,51 @@ impl IpfsClient {
         for listener in ls.listeners {
             let is_client = listener.target_address.starts_with("/p2p/");
             let mode = if is_client { TunnelMode::Client } else { TunnelMode::Server };
-            let local_multiaddr = if is_client { &listener.listen_address } else { &listener.target_address };
-            let local_parts: Vec<&str> = local_multiaddr.split('/').filter(|s| !s.is_empty()).collect();
-            if local_parts.len() < 4 { continue; }
+            let local_multiaddr_str = if is_client { &listener.listen_address } else { &listener.target_address };
 
-            let ip: IpAddr = match local_parts[1].parse() { Ok(v) => v, Err(_) => continue };
-            let port: u16 = match local_parts[3].parse() { Ok(v) => v, Err(_) => continue };
+            // 👈 使用 Multiaddr 健壮、安全地进行强类型协议解构
+            let maddr: Multiaddr = match local_multiaddr_str.parse() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::error!("从 IPFS 获取的 Multiaddr 路径解析失败 [{}]: {}", local_multiaddr_str, e);
+                    continue;
+                }
+            };
 
+            let mut parsed_ip = None;
+            let mut parsed_port = None;
+
+            for component in maddr.iter() {
+                match component {
+                    Protocol::Ip4(ipv4) => parsed_ip = Some(IpAddr::V4(ipv4)),
+                    Protocol::Ip6(ipv6) => parsed_ip = Some(IpAddr::V6(ipv6)),
+                    Protocol::Tcp(port) => parsed_port = Some(port),
+                    _ => {} // 忽略其他不相关的 P2P 组件协议
+                }
+            }
+
+            let (ip, port) = match (parsed_ip, parsed_port) {
+                (Some(i), Some(p)) => (i, p),
+                _ => {
+                    warn!("Multiaddr 缺少必要的 IP 或 TCP 端口项: {}", local_multiaddr_str);
+                    continue;
+                }
+            };
+
+            // 提取对端 PeerID
             let peer_id = if is_client {
-                let target_parts: Vec<&str> = listener.target_address.split('/').filter(|s| !s.is_empty()).collect();
-                if target_parts.len() < 2 { continue; }
-                target_parts[1].to_string()
+                let target_maddr: Multiaddr = match listener.target_address.parse() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mut p_id = "-".to_string();
+                for cmp in target_maddr.iter() {
+                    if let Protocol::P2p(multihash) = cmp {
+                        p_id = multihash.to_base58();
+                        break;
+                    }
+                }
+                p_id
             } else {
                 "-".to_string()
             };
@@ -119,10 +139,16 @@ impl IpfsClient {
                     local_ip: ip,
                     port,
                     peer_id,
-                    protocol: listener.protocol
+                    protocol: listener.protocol.clone(),
                 },
             );
         }
         Ok(map)
+    }
+}
+
+impl Default for IpfsClient {
+    fn default() -> Self {
+        Self::new()
     }
 }

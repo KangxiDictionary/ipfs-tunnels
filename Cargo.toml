@@ -3,6 +3,14 @@ name = "ipfs-tunnels-manager"
 version = "0.6.0"
 edition = "2021"
 
+[lib]
+name = "ipfs_tunnels_manager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ipfs-tunnels-manager"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
@@ -17,7 +25,6 @@ anyhow = "1.0"
 # 引入异步文件事件监听
 notify = "6.1"
 sys-locale = "0.3.2"
-
-[[bin]]
-name = "ipfs-tunnels-manager"
-path = "src/main.rs"
+multiaddr = "0.18.2"
+urlencoding = "2.1.3"
+tempfile = "3.27.0"

@@ -1,27 +1,20 @@
-mod config;
-mod error;
-mod ipfs;
-mod models;
-mod reconciler;
-mod signals;
-mod i18n; // 👈 引入多语言模块
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 
-use config::{ensure_config_exists, load_desired_state};
-use ipfs::IpfsClient;
-use reconciler::reconcile_all;
-use signals::wait_for_shutdown_signal;
-use i18n::{tr, LogKey}; // 👈 导入翻译方法
+// 🌟 修改：通过库包名引入内部模块
+use ipfs_tunnels_manager::config::{ensure_config_exists, load_desired_state};
+use ipfs_tunnels_manager::error::ReconcileError;
+use ipfs_tunnels_manager::i18n::{self, tr, LogKey};
+use ipfs_tunnels_manager::ipfs::IpfsClient;
+use ipfs_tunnels_manager::reconciler::{self, reconcile_all};
+use ipfs_tunnels_manager::signals::wait_for_shutdown_signal;
 
 #[derive(Debug)]
 enum TriggerEvent {
@@ -31,7 +24,6 @@ enum TriggerEvent {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. 优先初始化语言环境
     i18n::init();
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -46,45 +38,48 @@ async fn main() -> anyhow::Result<()> {
     ensure_config_exists(&config_file)?;
 
     let client = Arc::new(IpfsClient::new());
-
-    // 👈 结构化输出翻译后的文本
     info!("{}", tr(LogKey::ServiceStarting));
-    client.check_health().await.context(tr(LogKey::IpfsConnectError))?;
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<TriggerEvent>();
+    if let Err(e) = client.load_actual_state().await {
+        error!("IPFS Daemon 离线或联络失败，控制器拒绝初始化启动。错误原因: {:?}", e);
+        return Err(anyhow::anyhow!("IPFS connection refused on startup"));
+    }
 
-    // Hot-Reload
+    let (tx, mut rx) = mpsc::channel(32);
+
     let tx_file = tx.clone();
-    let config_file_cb = config_file.clone();
     let mut watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
             if let Ok(event) = res {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
-                    && event.paths.iter().any(|p| p == &config_file_cb) {
-                        let _ = tx_file.send(TriggerEvent::FileChanged);
-                    }
+                if matches!(event.kind, EventKind::Modify(_)) {
+                    let _ = tx_file.try_send(TriggerEvent::FileChanged);
+                }
             }
         },
         notify::Config::default(),
     )?;
     watcher.watch(&config_file, RecursiveMode::NonRecursive)?;
 
-    // 定时器
     let tx_tick = tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            let _ = tx_tick.send(TriggerEvent::PeriodicTick);
+            let _ = tx_tick.try_send(TriggerEvent::PeriodicTick);
         }
     });
 
     info!("{}", tr(LogKey::InitialSync));
-    let _ = run_reconcile_cycle(&client, &config_file).await;
+    // 👈 显式处理初始化首轮调和周期的报错反馈
+    if let Err(e) = run_reconcile_cycle(&client, &config_file).await {
+        error!("首轮全局拓扑同步失败: {:?}", e);
+        // 检查是否是致命错误，不是可重试错误
+        if !matches!(e.downcast_ref::<ReconcileError>(), Some(ReconcileError::Transport(_))) {
+            return Err(e);  // 快速失败
+        }
+    }
 
-    let shutdown_signal = wait_for_shutdown_signal();
-    tokio::pin!(shutdown_signal);
+    let mut shutdown_signal = Box::pin(wait_for_shutdown_signal());
 
     loop {
         tokio::select! {
@@ -93,7 +88,16 @@ async fn main() -> anyhow::Result<()> {
                     TriggerEvent::FileChanged => info!("{}", tr(LogKey::ConfigChanged)),
                     TriggerEvent::PeriodicTick => info!("{}", tr(LogKey::PeriodicCheck)),
                 }
-                let _ = run_reconcile_cycle(&client, &config_file).await;
+
+                // 👈 核心修改：明确对每一轮事件循环的返回结果进行健康度归纳与捕获
+                match run_reconcile_cycle(&client, &config_file).await {
+                    Ok(outcome) => {
+                        info!("本轮声明式调和圆满收敛成功！运行快照: {:?}", outcome);
+                    }
+                    Err(e) => {
+                        error!("本轮声明式同步遭遇阶段性阻塞或技术回滚: {:?}", e);
+                    }
+                }
             }
             _ = &mut shutdown_signal => {
                 break;
@@ -105,7 +109,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) -> anyhow::Result<()> {
+/// 核心修改：返回结构化的 ReconcileOutcome 报表结果
+async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) -> anyhow::Result<reconciler::ReconcileOutcome> {
     let desired = match load_desired_state(config_file) {
         Ok(d) => d,
         Err(e) => {
@@ -114,12 +119,19 @@ async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) ->
         }
     };
 
+    // Pre-flight 静态审查扩展：同时拦截冲突的端口和冲突的全局 P2P 协议主键
     let mut allocated_ports = HashSet::new();
+    let mut allocated_protocols = HashSet::new();
     for tunnel in desired.values() {
-        if tunnel.enabled && !allocated_ports.insert(tunnel.port) {
-            // 👈 把 port 当作结构化字段传入，字符串本体保持静态以支持国际化
-            error!(port = tunnel.port, "{}", tr(LogKey::PortConflict));
-            return Err(anyhow::anyhow!("Local port conflict"));
+        if tunnel.enabled {
+            if !allocated_ports.insert(tunnel.port) {
+                error!(port = tunnel.port, "{}", tr(LogKey::PortConflict));
+                return Err(anyhow::anyhow!("Local port conflict"));
+            }
+            if !allocated_protocols.insert(tunnel.protocol.clone()) {
+                error!(protocol = %tunnel.protocol, "致命配置错误 (Pre-flight 拦截): 发现了重复分配的全局 P2P 协议流主键！");
+                return Err(anyhow::anyhow!("Duplicate global protocol identifier"));
+            }
         }
     }
 
@@ -127,15 +139,12 @@ async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) ->
         Ok(a) => a,
         Err(e) => {
             error!(error = ?e, "{}", tr(LogKey::IpfsReadError));
-            return Err(e);
+            return Err(e.into());
         }
     };
 
-    if let Err(reconcile_err) = reconcile_all(client.clone(), desired, actual).await {
-        warn!(error = %reconcile_err, "{}", tr(LogKey::SyncFailed));
-    } else {
-        info!("{}", tr(LogKey::SyncComplete));
-    }
+    let outcome = reconcile_all(Arc::clone(client), desired, actual).await?;
+    info!("{}", tr(LogKey::SyncComplete));
 
-    Ok(())
+    Ok(outcome)
 }
