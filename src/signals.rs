@@ -1,4 +1,5 @@
 use tracing::info;
+use crate::i18n::{tr, LogKey};
 
 pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
     #[cfg(unix)]
@@ -11,10 +12,10 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
 
         tokio::select! {
             _ = sigterm.recv() => {
-                info!("接收到 SIGTERM 信号，正在准备安全退出...");
+                info!("{}", tr(LogKey::SigtermReceived));
             }
             _ = &mut sigint => {
-                info!("接收到退出指令 (Ctrl+C)，正在准备安全退出...");
+                info!("{}", tr(LogKey::SigintReceived));
             }
         }
     }
@@ -22,7 +23,7 @@ pub async fn wait_for_shutdown_signal() -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         tokio::signal::ctrl_c().await?;
-        info!("接收到退出指令 (Ctrl+C)，正在准备安全退出...");
+        info!("{}", tr(LogKey::SigintReceived));
     }
 
     Ok(())

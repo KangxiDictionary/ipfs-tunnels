@@ -4,6 +4,7 @@ mod ipfs;
 mod models;
 mod reconciler;
 mod signals;
+mod i18n; // 👈 引入多语言模块
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ use config::{ensure_config_exists, load_desired_state};
 use ipfs::IpfsClient;
 use reconciler::reconcile_all;
 use signals::wait_for_shutdown_signal;
+use i18n::{tr, LogKey}; // 👈 导入翻译方法
 
 #[derive(Debug)]
 enum TriggerEvent {
@@ -29,6 +31,9 @@ enum TriggerEvent {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // 1. 优先初始化语言环境
+    i18n::init();
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let subscriber = FmtSubscriber::builder().with_env_filter(filter).finish();
     tracing::subscriber::set_global_default(subscriber)?;
@@ -41,9 +46,10 @@ async fn main() -> anyhow::Result<()> {
     ensure_config_exists(&config_file)?;
 
     let client = Arc::new(IpfsClient::new());
-    // 👈 简化：告别中二词汇，直接说干啥
-    info!("服务正在启动...");
-    client.check_health().await.context("无法连接到本地 IPFS 节点，请检查服务是否运行")?;
+
+    // 👈 结构化输出翻译后的文本
+    info!("{}", tr(LogKey::ServiceStarting));
+    client.check_health().await.context(tr(LogKey::IpfsConnectError))?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<TriggerEvent>();
 
@@ -63,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     watcher.watch(&config_file, RecursiveMode::NonRecursive)?;
 
-    // 定时检查
+    // 定时器
     let tx_tick = tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -74,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    info!("正在执行初始状态同步...");
+    info!("{}", tr(LogKey::InitialSync));
     let _ = run_reconcile_cycle(&client, &config_file).await;
 
     let shutdown_signal = wait_for_shutdown_signal();
@@ -84,9 +90,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             Some(event) = rx.recv() => {
                 match event {
-                    // 👈 简化：直白明了
-                    TriggerEvent::FileChanged => info!("检测到 tunnels.conf 发生修改，开始同步状态..."),
-                    TriggerEvent::PeriodicTick => info!("执行 60 秒定时状态检查..."),
+                    TriggerEvent::FileChanged => info!("{}", tr(LogKey::ConfigChanged)),
+                    TriggerEvent::PeriodicTick => info!("{}", tr(LogKey::PeriodicCheck)),
                 }
                 let _ = run_reconcile_cycle(&client, &config_file).await;
             }
@@ -96,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    info!("服务已安全停止。");
+    info!("{}", tr(LogKey::ServiceStopped));
     Ok(())
 }
 
@@ -104,7 +109,7 @@ async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) ->
     let desired = match load_desired_state(config_file) {
         Ok(d) => d,
         Err(e) => {
-            error!("读取配置文件失败，跳过本次同步。原因: {:?}", e);
+            error!(error = ?e, "{}", tr(LogKey::ConfigReadError));
             return Err(e);
         }
     };
@@ -112,24 +117,24 @@ async fn run_reconcile_cycle(client: &Arc<IpfsClient>, config_file: &PathBuf) ->
     let mut allocated_ports = HashSet::new();
     for tunnel in desired.values() {
         if tunnel.enabled && !allocated_ports.insert(tunnel.port) {
-            // 👈 简化：去掉 Pre-flight 拦截等术语
-            error!("配置错误：端口 [{}] 存在冲突！终止状态同步。", tunnel.port);
-            return Err(anyhow::anyhow!("本地端口冲突"));
+            // 👈 把 port 当作结构化字段传入，字符串本体保持静态以支持国际化
+            error!(port = tunnel.port, "{}", tr(LogKey::PortConflict));
+            return Err(anyhow::anyhow!("Local port conflict"));
         }
     }
 
     let actual = match client.load_actual_state().await {
         Ok(a) => a,
         Err(e) => {
-            error!("无法从 IPFS 读取运行状态，跳过本次同步。原因: {:?}", e);
+            error!(error = ?e, "{}", tr(LogKey::IpfsReadError));
             return Err(e);
         }
     };
 
     if let Err(reconcile_err) = reconcile_all(client.clone(), desired, actual).await {
-        warn!("部分隧道同步失败: {}", reconcile_err);
+        warn!(error = %reconcile_err, "{}", tr(LogKey::SyncFailed));
     } else {
-        info!("所有隧道状态同步完成。");
+        info!("{}", tr(LogKey::SyncComplete));
     }
 
     Ok(())

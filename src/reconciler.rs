@@ -1,6 +1,8 @@
 use crate::error::ReconcileError;
 use crate::ipfs::IpfsClient;
 use crate::models::{ActualTunnel, DesiredTunnel, TunnelMode};
+use crate::i18n::{tr, get_lang, Lang, LogKey};
+
 use futures::stream::{self, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -44,21 +46,19 @@ pub async fn reconcile_all(
                 let _span = tracing::info_span!("tunnel", protocol = %proto).entered();
                 match (desired, actual) {
                     (Some(d), None) if d.enabled => {
-                        // 👈 统一命名规范，突出操作动作
-                        info!(name = %d.name, "发现新配置，正在创建隧道...");
+                        info!(name = %d.name, "{}", tr(LogKey::TunnelCreating));
                         client.execute_with_retry(|| apply_tunnel(&client, &d)).await?;
-                        info!(name = %d.name, "隧道创建成功");
+                        info!(name = %d.name, "{}", tr(LogKey::TunnelCreated));
                     }
 
                     (Some(d), Some(a)) if d.enabled
                         && (d.mode != a.mode || d.local_ip != a.local_ip || d.port != a.port || d.peer_id != a.peer_id) => {
-                            // 👈 去掉“配置漂移”、“事务更新”，改用普通开发都懂的“状态不一致”、“更新/回滚”
-                            warn!(name = %d.name, "检测到实际状态与配置不符，正在更新隧道...");
+                            warn!(name = %d.name, "{}", tr(LogKey::TunnelUpdating));
 
                             client.execute_with_retry(|| client.p2p_close(&d.protocol)).await?;
 
                             if let Err(create_err) = client.execute_with_retry(|| apply_tunnel(&client, &d)).await {
-                                error!(name = %d.name, error = %create_err, "新配置应用失败，正在尝试回滚旧配置...");
+                                error!(name = %d.name, error = %create_err, "{}", tr(LogKey::TunnelRollbackAttempt));
 
                                 let rollback_desired = DesiredTunnel {
                                     name: d.name.clone(), mode: a.mode, local_ip: a.local_ip,
@@ -66,26 +66,24 @@ pub async fn reconcile_all(
                                 };
 
                                 if let Err(rollback_err) = client.execute_with_retry(|| apply_tunnel(&client, &rollback_desired)).await {
-                                    error!(name = %d.name, fatal_err = %rollback_err, "致命错误：旧配置回滚失败！隧道当前状态可能损坏！");
+                                    error!(name = %d.name, fatal_err = %rollback_err, "{}", tr(LogKey::TunnelRollbackFailed));
                                     return Err(ReconcileError::RollbackFailed(rollback_err.to_string()));
                                 }
                                 return Err(create_err);
                             }
-                            info!(name = %d.name, "旧隧道更新成功");
+                            info!(name = %d.name, "{}", tr(LogKey::TunnelUpdated));
                         }
 
                     (Some(d), Some(a)) if !d.enabled => {
-                        // 👈 拒绝“显式禁用”、“安全下线”，直接说关闭
-                        info!(name = %d.name, "隧道已在配置中禁用，正在关闭...");
+                        info!(name = %d.name, "{}", tr(LogKey::TunnelDisabling));
                         client.execute_with_retry(|| client.p2p_close(&a.protocol)).await?;
-                        info!(name = %d.name, "解绑关闭成功");
+                        info!(name = %d.name, "{}", tr(LogKey::TunnelDisabled));
                     }
 
                     (None, Some(a)) => {
-                        // 👈 拒绝“陈旧残留过时”，用“未定义”更直白
-                        warn!("发现配置中未定义的残留隧道，正在清理...");
+                        warn!("{}", tr(LogKey::TunnelCleaning));
                         client.execute_with_retry(|| client.p2p_close(&a.protocol)).await?;
-                        info!("残留隧道清理完成");
+                        info!("{}", tr(LogKey::TunnelCleaned));
                     }
 
                     _ => {}
@@ -100,13 +98,18 @@ pub async fn reconcile_all(
     let mut err_count = 0;
     for res in results {
         if let Err(e) = res {
-            error!(error = %e, "隧道处理失败");
+            error!(error = %e, "{}", tr(LogKey::SyncFailed));
             err_count += 1;
         }
     }
 
     if err_count > 0 {
-        anyhow::bail!("本轮同步未完全完成，共有 {} 个错误", err_count);
+        // 对于最终抛出返回给运行环境的系统级异常，采用匹配实时包装错误
+        let err_msg = match get_lang() {
+            Lang::Zh => format!("本轮同步未完全完成，共有 {} 个错误", err_count),
+            Lang::En => format!("Reconciliation cycle incomplete, total {} errors detected", err_count),
+        };
+        anyhow::bail!(err_msg);
     }
     Ok(())
 }

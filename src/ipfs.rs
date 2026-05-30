@@ -1,8 +1,10 @@
 use crate::error::ReconcileError;
 use crate::models::{ActualTunnel, IpfsP2pLsResponse, TunnelMode};
+use crate::i18n::{tr, LogKey};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
+use tracing::warn;
 
 const IPFS_RPC_BASE: &str = "http://127.0.0.1:5001/api/v0";
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -35,8 +37,8 @@ impl IpfsClient {
                     if !e.is_retryable() || attempts <= 1 {
                         return Err(e);
                     }
-                    // 👈 简化：去掉“瞬时故障”、“指数退避”等花哨词汇
-                    tracing::warn!(error = %e, "网络请求失败，正在重试... 剩余次数: {}", attempts - 1);
+                    // 👈 动态变化的数字变成独立参数域 `remaining` 吐出
+                    warn!(error = %e, remaining = attempts - 1, "{}", tr(LogKey::NetworkRetry));
                     tokio::time::sleep(delay).await;
                     attempts -= 1;
                     delay = std::cmp::min(delay * 2, MAX_RETRY_DELAY);

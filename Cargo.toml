@@ -17,3 +17,4 @@ dirs = "5.0"
 anyhow = "1.0"
 # 引入异步文件事件监听
 notify = "6.1"
+sys-locale = "0.3.2"
