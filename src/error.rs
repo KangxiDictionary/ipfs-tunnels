@@ -22,8 +22,7 @@ impl ReconcileError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // 👈 换成 tokio::test 宏，允许函数使用 async
+        
     #[tokio::test]
     async fn test_reconcile_error_retryable() {
         // 构造一个必定失败的请求来获取 reqwest::Error

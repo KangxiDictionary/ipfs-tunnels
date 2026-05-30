@@ -1,95 +1,119 @@
-# ipfs-tunnels
+# ipfs-tunnels-manager
 
-**声明式 IPFS P2P 隧道管理器**
+**A Declarative IPFS P2P Tunnel Operator**
 
-ipfs-tunnels 是一个轻量级守护进程，旨在通过 IPFS 网络实现安全可靠的内网服务穿透。它采用声明式设计，借鉴 Kubernetes Operator 的 Reconcile 模式，自动将实际运行状态收敛至配置文件所定义的期望状态。
+[中文说明](./README_zh.md)
 
-支持 `client`（端口转发）和 `server`（服务暴露）两种模式，适用于 SSH、Minecraft、Web 服务等场景。
+`ipfs-tunnels-manager` is a lightweight background daemon designed to build secure, reliable peer-to-peer tunnels over the IPFS network. Adopting a declarative paradigm inspired by Kubernetes Operators, it runs a continuous reconcile loop to drive the actual network topology toward the state declared in your local configuration file.
 
-## 核心特性
+It perfectly supports both `client` (port forwarding) and `server` (service exposing) modes, making it ideal for remotely accessing internal SSH, hosting Minecraft servers, or exposing temporary Web services without static public IPs.
 
-- 双模式支持（`p2p forward` / `p2p listen`）
-- 配置热重载（修改配置文件后自动生效）
-- 周期性防漂移检查（每 60 秒）
-- 事务性更新与失败回滚机制
-- 本地端口冲突预检测
-- 网络故障指数退避重试
-- 跨平台优雅退出支持
+---
 
-## 快速开始
+## 🚀 Key Features
 
-### 前置条件
+- **Declarative & Event-Driven**: Leverages a robust Reconcile loop with config hot-reloading (via `notify`) and a 60s periodic anti-drift enforcement clock.
+- **Transactional Updates**: Prevents partial topology failures with a built-in roll-back engine when downstream IPFS RPC calls fail.
+- **Pre-flight Conflict Validation**: Intercepts local port assignment overlap before touching production configurations.
+- **Resilient Network Handling**: Exponential backoff retry engine for handling transient network dropouts elegantly.
+- **Cross-Platform Daemonization**: Pure-native background service management script support for both Linux and Windows.
 
-- 已运行的 IPFS Daemon（默认 RPC 端口 5001）
-- Rust 稳定版工具链
+---
 
-### 编译安装
+## 📦 Quick Start
 
+### Prerequisites
+- A running IPFS Daemon (Default RPC endpoint: `http://127.0.0.1:5001`)
+- Stable Rust toolchain (`cargo`, `rustc`)
+
+### 1. Clone & Build
 ```bash
-git clone https://github.com/KangxiDictionary/ipfs-tunnels.git
+git clone [https://github.com/KangxiDictionary/ipfs-tunnels.git](https://github.com/KangxiDictionary/ipfs-tunnels.git)
 cd ipfs-tunnels
 
-# 通过 cargo 安装
-cargo install --path .
 ```
 
-### 启动
+### 2. Automatic Background Installation
 
-首次运行会自动在以下位置创建默认配置文件：
+We provide native native scripts to install the executable and wire it up directly into your user-level system supervisor.
 
-- Linux/macOS：`~/.config/ipfs-tunnels/tunnels.conf`
-- Windows：`%APPDATA%\ipfs-tunnels\tunnels.conf`
+#### On Linux (Arch / CachyOS / Ubuntu)
+
+This compiles the binary into `~/.cargo/bin/` and registers a `systemd --user` service:
 
 ```bash
-ipfs-tunnels-manager
+chmod +x scripts/install.sh
+./scripts/install.sh
+
 ```
 
-程序启动后会自动检测 IPFS 节点连通性。
+*To watch real-time logs:* `journalctl --user -u ipfs-tunnels-manager -f`
 
-## 配置文件
+#### On Windows
 
-采用 `|` 分隔的纯文本格式：
+This compiles the executable and leverages the native Windows **Task Scheduler** to register a silent, windowless background task running at logon (No Admin/NSSM required!):
+
+```powershell
+./scripts/install.ps1
+
+```
+
+---
+
+## ⚙️ Configuration
+
+On its very first launch, the manager automatically populates a fully documented template file inside your user profile directory:
+
+* **Linux**: `~/.config/ipfs-tunnels/tunnels.conf`
+* **Windows**: `C:\Users\<Your-Username>\AppData\Roaming\ipfs-tunnels\tunnels.conf`
+
+### Spec Format
+
+The configuration uses a strict, pipe-separated (`|`) grid schema. You can edit it arbitrarily in real-time:
 
 ```text
 # name | mode | local_ip | port | peer_id | protocol | enabled
 
-# 客户端示例：将本地 Minecraft 服务通过 IPFS 转发
-mc_client | client | 127.0.0.1 | 25565 | 12D3KooWxxxxxxxxxxxxxxxxxxxxxxxx | /x/minecraft | true
+# Client Mode: Map a remote Minecraft server hosted over IPFS onto your local port 25565
+mc_client  | client | 127.0.0.1 | 25565 | 12D3KooWxxxxxxxxxxxxxxxxxxxxxxxx | /x/minecraft | true
 
-# 服务端示例：将本地 SSH 服务暴露到 IPFS 网络
-ssh_server | server | 127.0.0.1 | 22 | - | /x/ssh | true
+# Server Mode: Safely expose your local SSH instance onto the IPFS network
+ssh_server | server | 127.0.0.1 | 22    | -          | /x/ssh       | true
+
 ```
 
-### 字段说明
+### Fields Definitions
 
-| 字段       | 说明                              | 示例值 |
-|------------|-----------------------------------|--------|
-| name       | 隧道名称（仅标识）                | mc_client |
-| mode       | 工作模式                          | client / server |
-| local_ip   | 本地绑定 IP                       | 127.0.0.1 |
-| port       | 本地端口                          | 25565 |
-| peer_id    | 对方 PeerID（server 模式填 `-`） | 12D3KooW... |
-| protocol   | 协议标识（全局唯一主键）          | /x/minecraft |
-| enabled    | 是否启用                          | true / false |
+| Field | Requirement | Description | Example |
+| --- | --- | --- | --- |
+| **name** | Optional | Arbitrary nickname for tracing logs | `mc_client` |
+| **mode** | **Required** | `client` (forwarding) or `server` (listening) | `client` / `server` |
+| **local_ip** | **Required** | Local loopback or binding interface | `127.0.0.1` |
+| **port** | **Required** | Target network port (must be unique among enabled nodes) | `25565` |
+| **peer_id** | Conditional | Remote IPFS Node ID (Must provide in client mode; use `-` for server) | `12D3KooW...` |
+| **protocol** | **Required** | **Global Unique Identifier (Primary Key)** for the P2P stream. | `/x/minecraft` |
+| **enabled** | **Required** | Toggles the runtime mount state dynamically | `true` / `false` |
 
-**注意**：`protocol` 字段必须全局唯一。
+---
 
-## 使用场景
+## 🛠️ Troubleshooting
 
-- 内网 SSH 服务通过 IPFS 安全访问
-- 跨地域游戏服务器联机
-- 临时暴露 Web 服务
-- 替代传统端口映射，减少公网暴露风险
-
-## 构建与开发
-
+### 1. Operator fails to initialize on startup
+**Symptom:** Log says `IPFS Daemon is offline, controller refused to initialize.`
+**Fix:** The manager requires a responsive IPFS node. Ensure your node is healthy by querying its status manually:
 ```bash
-cargo build --release
-cargo test
+# Verify IPFS RPC is reachable
+curl -X POST [http://127.0.0.1:5001/api/v0/id](http://127.0.0.1:5001/api/v0/id)
+
 ```
 
-## License
+### 2. Local Port Allocation Conflict
 
-本项目基于 **GNU General Public License v3.0**（GPL-3.0）开源。
+**Symptom:** Log says `Fatal Error (Pre-flight Interception): Conflicting local port allocation [xxxx]! Terminating current reconcile cycle.`
+**Fix:** Two or more tunnels marked as `enabled | true` are binding to the exact same `port`. Open `tunnels.conf` and assign distinct local ports to fix the collision.
 
-详见 [LICENSE](LICENSE) 文件。
+---
+
+## 📜 License
+
+This project is licensed under the **GNU General Public License v3.0** (GPL-3.0). See the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
