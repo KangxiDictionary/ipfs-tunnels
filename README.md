@@ -41,7 +41,7 @@ cargo install --path .
 - Windows：`%APPDATA%\ipfs-tunnels\tunnels.conf`
 
 ```bash
-ipfs-tunnels
+ipfs-tunnels-manager
 ```
 
 程序启动后会自动检测 IPFS 节点连通性。
