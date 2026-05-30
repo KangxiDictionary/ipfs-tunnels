@@ -33,13 +33,6 @@ cd ipfs-tunnels
 cargo install --path .
 ```
 
-或者使用 Meson 构建系统：
-
-```bash
-meson setup build && ninja -C build
-sudo ninja -C build install
-```
-
 ### 启动
 
 首次运行会自动在以下位置创建默认配置文件：

@@ -653,7 +653,6 @@ dependencies = [
  "notify",
  "reqwest",
  "serde",
- "serde_json",
  "sys-locale",
  "thiserror",
  "tokio",
