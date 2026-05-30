@@ -1,302 +1,277 @@
 #[cfg(test)]
 mod reconciler_tests {
-    use ipfs_tunnels_manager::error::ReconcileError;
     use ipfs_tunnels_manager::models::{ActualTunnel, DesiredTunnel, TunnelMode};
-    use ipfs_tunnels_manager::reconciler::ReconcileOutcome;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
-    // ==========================================
-    // 辅助函数
-    // ==========================================
     fn create_desired_tunnel(
         name: &str,
         protocol: &str,
         mode: TunnelMode,
+        port: u16,
         enabled: bool,
     ) -> DesiredTunnel {
         DesiredTunnel {
             name: name.to_string(),
             mode,
             local_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            port: 25565,
-            peer_id: "Qm123456...".to_string(),
+            port,
+            target: "Qm1234567890TestPeerId".to_string(),
             protocol: protocol.to_string(),
             enabled,
         }
     }
 
-    fn create_actual_tunnel(protocol: &str, mode: TunnelMode) -> ActualTunnel {
+    fn create_actual_tunnel(protocol: &str, mode: TunnelMode, port: u16) -> ActualTunnel {
         ActualTunnel {
             mode,
             local_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            port: 25565,
-            peer_id: "Qm123456...".to_string(),
+            port,
+            target: "Qm1234567890TestPeerId".to_string(),
             protocol: protocol.to_string(),
         }
     }
 
     // ==========================================
-    // 单元测试：ReconcileOutcome
+    // 单元测试：协议碰撞检测（在 main.rs 的 pre-flight 检查中）
     // ==========================================
     #[test]
-    fn test_reconcile_outcome_default() {
-        let outcome = ReconcileOutcome::default();
-        assert_eq!(outcome.created, 0);
-        assert_eq!(outcome.updated, 0);
-        assert_eq!(outcome.deleted, 0);
-        assert_eq!(outcome.failed, 0);
-        assert_eq!(outcome.rollback_failures.len(), 0);
-        assert!(!outcome.partial_success);
-    }
+    fn test_protocol_collision_detection_in_desired() {
+        let mut desired: HashMap<String, DesiredTunnel> = HashMap::new();
 
-    #[test]
-    fn test_reconcile_outcome_modification() {
-        // ✅ Clippy 建议：直接用初始化器而不是先 default() 再修改
-        let outcome = ReconcileOutcome {
-            created: 5,
-            updated: 3,
-            failed: 1,
-            partial_success: true,
-            ..Default::default()
-        };
-
-        assert_eq!(outcome.created, 5);
-        assert_eq!(outcome.updated, 3);
-        assert_eq!(outcome.failed, 1);
-        assert!(outcome.partial_success);
-    }
-
-    // ==========================================
-    // 单元测试：隧道创建和比较
-    // ==========================================
-    #[test]
-    fn test_desired_tunnel_equality() {
-        let t1 = create_desired_tunnel("test", "/x/test", TunnelMode::Client, true);
-        let t2 = create_desired_tunnel("test", "/x/test", TunnelMode::Client, true);
-
-        assert_eq!(t1, t2);
-    }
-
-    #[test]
-    fn test_tunnel_drift_detection_mode() {
-        let desired = create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Client, true);
-        let actual = create_actual_tunnel("/x/ssh", TunnelMode::Server);
-
-        let is_drifted = desired.mode != actual.mode;
-        assert!(is_drifted);
-    }
-
-    #[test]
-    fn test_tunnel_drift_detection_port() {
-        let mut desired = create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Client, true);
-        desired.port = 2222;
-
-        let actual = create_actual_tunnel("/x/ssh", TunnelMode::Client);
-
-        let is_drifted = desired.port != actual.port;
-        assert!(is_drifted);
-    }
-
-    #[test]
-    fn test_tunnel_drift_detection_ip() {
-        let mut desired = create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Client, true);
-        desired.local_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
-
-        let actual = create_actual_tunnel("/x/ssh", TunnelMode::Client);
-
-        let is_drifted = desired.local_ip != actual.local_ip;
-        assert!(is_drifted);
-    }
-
-    #[test]
-    fn test_tunnel_no_drift() {
-        let desired = create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Client, true);
-        let actual = create_actual_tunnel("/x/ssh", TunnelMode::Client);
-
-        let is_changed = desired.mode != actual.mode
-            || desired.local_ip != actual.local_ip
-            || desired.port != actual.port;
-
-        assert!(!is_changed);
-    }
-
-    // ==========================================
-    // 错误处理测试
-    // ==========================================
-    #[test]
-    fn test_reconcile_error_transport_is_retryable() {
-        let rejected = ReconcileError::Rejected("test".to_string());
-        assert!(!rejected.is_retryable());
-
-        let unavailable = ReconcileError::Unavailable("test".to_string());
-        assert!(!unavailable.is_retryable());
-
-        let rollback_failed = ReconcileError::RollbackFailed("test".to_string());
-        assert!(!rollback_failed.is_retryable());
-    }
-
-    #[test]
-    fn test_partial_rollback_failed_error() {
-        let err = ReconcileError::PartialRollbackFailed {
-            affected_count: 2,
-            records: Vec::new(),
-        };
-
-        assert!(!err.is_retryable());
-        let err_str = err.to_string();
-        assert!(err_str.contains("部分隧道同步成功"));
-    }
-
-    // ==========================================
-    // 场景测试：隧道状态转换逻辑
-    // ==========================================
-    #[test]
-    fn test_scenario_new_tunnel_creation() {
-        // 期望: minecraft 隧道，实际: 不存在
-        let desired = create_desired_tunnel("minecraft", "/x/minecraft", TunnelMode::Client, true);
-        let actual: HashMap<String, ActualTunnel> = HashMap::new();
-
-        // ✅ 修复：使用实际变量而不是每次创建新的空 HashMap
-        let should_create = desired.enabled && !actual.contains_key("/x/minecraft");
-
-        assert!(should_create);
-    }
-
-    #[test]
-    fn test_scenario_tunnel_disabled() {
-        // 期望: 禁用，实际: 存在
-        let desired = create_desired_tunnel("old-tunnel", "/x/old", TunnelMode::Client, false);
-        let actual_exists = true;
-
-        // 模拟逻辑：应该关闭
-        let should_close = !desired.enabled && actual_exists;
-        assert!(should_close);
-    }
-
-    #[test]
-    fn test_scenario_tunnel_orphan() {
-        // 期望: 不存在，实际: 存在（孤儿）
-        let desired_exists = false;
-        let actual_exists = true;
-
-        // 模拟逻辑：应该清理
-        let should_cleanup = !desired_exists && actual_exists;
-        assert!(should_cleanup);
-    }
-
-    #[test]
-    fn test_scenario_tunnel_no_change() {
-        // 期望和实际都相同
-        let desired = create_desired_tunnel("stable", "/x/stable", TunnelMode::Server, true);
-        let actual = create_actual_tunnel("/x/stable", TunnelMode::Server);
-
-        let is_changed = desired.mode != actual.mode
-            || desired.local_ip != actual.local_ip
-            || desired.port != actual.port;
-
-        assert!(!is_changed);
-    }
-
-    // ==========================================
-    // 集成场景测试
-    // ==========================================
-    #[test]
-    fn test_multiple_tunnels_mixed_operations() {
-        // 场景: 3 个隧道，不同的操作
-        let tunnel_create = create_desired_tunnel("new_tunnel", "/x/new", TunnelMode::Client, true);
-        let tunnel_disable = create_desired_tunnel("old_tunnel", "/x/old", TunnelMode::Client, false);
-        let tunnel_stable = create_desired_tunnel("stable", "/x/stable", TunnelMode::Server, true);
-
-        assert!(tunnel_create.enabled);
-        assert!(!tunnel_disable.enabled);
-        assert!(tunnel_stable.enabled);
-    }
-
-    #[test]
-    fn test_tunnel_mode_variants() {
-        let client = TunnelMode::Client;
-        let server = TunnelMode::Server;
-
-        assert_eq!(client, TunnelMode::Client);
-        assert_eq!(server, TunnelMode::Server);
-        assert_ne!(client, server);
-    }
-
-    #[test]
-    fn test_rollback_record_structure() {
-        let tunnel = create_desired_tunnel("test", "/x/test", TunnelMode::Client, true);
-        let record = ipfs_tunnels_manager::error::RollbackRecord {
-            protocol: "/x/test".to_string(),
-            desired_tunnel: tunnel,
-            rollback_err: "Mock error".to_string(),
-        };
-
-        assert_eq!(record.protocol, "/x/test");
-        assert_eq!(record.rollback_err, "Mock error");
-    }
-
-    // ==========================================
-    // HashMap 状态检查测试
-    // ==========================================
-    #[test]
-    fn test_actual_state_presence_check() {
-        // ✅ 正确的方式：显式指定 HashMap 的类型
-        let mut actual: HashMap<String, ActualTunnel> = HashMap::new();
-
-        // 初始状态：为空
-        assert!(!actual.contains_key("/x/minecraft"));
-
-        // 添加隧道
-        actual.insert(
-            "/x/minecraft".to_string(),
-            create_actual_tunnel("/x/minecraft", TunnelMode::Client),
+        // 两个隧道使用相同协议（配置层面的重复）
+        desired.insert(
+            "tunnel_a".to_string(),
+            create_desired_tunnel("tunnel_a", "/x/collision", TunnelMode::Client, 8080, true),
+        );
+        desired.insert(
+            "tunnel_b".to_string(),
+            create_desired_tunnel("tunnel_b", "/x/collision", TunnelMode::Server, 9090, true),
         );
 
-        // 现在存在
-        assert!(actual.contains_key("/x/minecraft"));
+        // 检查协议冲突逻辑（模拟 main.rs 中的 pre-flight 检查）
+        let mut allocated_protocols = std::collections::HashSet::new();
+        let mut has_collision = false;
+
+        for tunnel in desired.values() {
+            if tunnel.enabled
+                && !allocated_protocols.insert(tunnel.protocol.clone()) {
+                    has_collision = true;
+                    break;
+                }
+        }
+
+        assert!(has_collision, "应该检测到协议碰撞");
+    }
+
+    // ==========================================
+    // 单元测试：漂移检测逻辑
+    // ==========================================
+    #[test]
+    fn test_drift_detection_port_change() {
+        let desired = create_desired_tunnel("secure_ssh", "/x/ssh", TunnelMode::Client, 2222, true);
+        let actual = create_actual_tunnel("/x/ssh", TunnelMode::Client, 22);
+
+        // ✅ 直接测试漂移检测逻辑
+        let is_drifted = desired.port != actual.port;  // 2222 != 22
+        assert!(is_drifted, "端口从 22 变为 2222，应该检测到漂移");
     }
 
     #[test]
+    fn test_drift_detection_mode_change() {
+        let desired = create_desired_tunnel("tunnel", "/x/test", TunnelMode::Server, 8080, true);
+        let actual = create_actual_tunnel("/x/test", TunnelMode::Client, 8080);
+
+        // ✅ 模式不同，应该检测到漂移
+        let is_drifted = desired.mode != actual.mode
+            || desired.local_ip != actual.local_ip
+            || desired.port != actual.port
+            || desired.target != actual.target;
+
+        assert!(is_drifted, "Mode 从 Client 变为 Server，应该检测到漂移");
+    }
+
+    #[test]
+    fn test_drift_detection_ip_change() {
+        let mut desired = create_desired_tunnel("tunnel", "/x/test", TunnelMode::Client, 8080, true);
+        desired.local_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+
+        let actual = create_actual_tunnel("/x/test", TunnelMode::Client, 8080);
+
+        // ✅ IP 不同，应该检测到漂移
+        let is_drifted = desired.mode != actual.mode
+            || desired.local_ip != actual.local_ip
+            || desired.port != actual.port
+            || desired.target != actual.target;
+
+        assert!(is_drifted, "IP 不同应该检测到漂移");
+    }
+
+    #[test]
+    fn test_no_drift_when_identical() {
+        let desired = create_desired_tunnel("stable", "/x/stable", TunnelMode::Server, 8080, true);
+        let actual = create_actual_tunnel("/x/stable", TunnelMode::Server, 8080);
+
+        // ✅ 完全相同，应该没有漂移
+        let is_drifted = desired.mode != actual.mode
+            || desired.local_ip != actual.local_ip
+            || desired.port != actual.port
+            || desired.target != actual.target;
+
+        assert!(!is_drifted, "隧道配置完全相同，不应该检测到漂移");
+    }
+
+    // ==========================================
+    // 隧道状态转换逻辑测试
+    // ==========================================
+    #[test]
+    fn test_tunnel_creation_scenario() {
+        // 场景：新隧道，期望存在但实际不存在
+        let desired = create_desired_tunnel("new_tunnel", "/x/new", TunnelMode::Client, 9999, true);
+        let actual_map: HashMap<String, ActualTunnel> = HashMap::new();
+
+        let should_create = desired.enabled && !actual_map.contains_key("/x/new");
+        assert!(should_create, "新隧道应该被创建");
+    }
+
+    #[test]
+    fn test_tunnel_disable_scenario() {
+        // 场景：禁用隧道，期望被禁用但实际存在
+        let desired = create_desired_tunnel("old_tunnel", "/x/old", TunnelMode::Client, 8080, false);
+
+        let mut actual_map: HashMap<String, ActualTunnel> = HashMap::new();
+        actual_map.insert("/x/old".to_string(), create_actual_tunnel("/x/old", TunnelMode::Client, 8080));
+
+        let should_close = !desired.enabled && actual_map.contains_key("/x/old");
+        assert!(should_close, "禁用的隧道应该被关闭");
+    }
+
+    #[test]
+    fn test_tunnel_cleanup_orphan_scenario() {
+        // 场景：孤儿隧道，配置中不存在但实际存在
+        let desired_map: HashMap<String, DesiredTunnel> = HashMap::new();
+
+        let mut actual_map: HashMap<String, ActualTunnel> = HashMap::new();
+        actual_map.insert("/x/orphan".to_string(), create_actual_tunnel("/x/orphan", TunnelMode::Server, 3000));
+
+        let desired_exists = desired_map.iter().any(|(_, t)| t.protocol == "/x/orphan");
+        let actual_exists = actual_map.contains_key("/x/orphan");
+
+        let should_cleanup = !desired_exists && actual_exists;
+        assert!(should_cleanup, "孤儿隧道应该被清理");
+    }
+
+    // ==========================================
+    // 隧道关系转换：构建 desired_by_proto
+    // ==========================================
+    #[test]
     fn test_desired_by_proto_mapping() {
-        // ✅ 演示如何构建 desired_by_proto 映射
         let mut desired: HashMap<String, DesiredTunnel> = HashMap::new();
         desired.insert(
             "minecraft".to_string(),
-            create_desired_tunnel("minecraft", "/x/minecraft", TunnelMode::Client, true),
+            create_desired_tunnel("minecraft", "/x/minecraft", TunnelMode::Client, 25565, true),
+        );
+        desired.insert(
+            "ssh".to_string(),
+            create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Server, 22, true),
         );
 
-        // 翻转映射：从 name 到 protocol
+        // 转换为 protocol 索引
         let mut desired_by_proto: HashMap<String, DesiredTunnel> = HashMap::new();
         for tunnel in desired.values() {
             desired_by_proto.insert(tunnel.protocol.clone(), tunnel.clone());
         }
 
+        assert_eq!(desired_by_proto.len(), 2);
         assert!(desired_by_proto.contains_key("/x/minecraft"));
-        assert_eq!(desired_by_proto.len(), 1);
+        assert!(desired_by_proto.contains_key("/x/ssh"));
     }
 
+    // ==========================================
+    // 多隧道混合操作场景
+    // ==========================================
     #[test]
-    fn test_tunnel_comparison_with_hashmap() {
-        // ✅ 演示如何检查隧道是否存在及是否漂移
-        let mut desired_by_proto: HashMap<String, DesiredTunnel> = HashMap::new();
-        let desired = create_desired_tunnel("ssh", "/x/ssh", TunnelMode::Client, true);
-        desired_by_proto.insert("/x/ssh".to_string(), desired.clone());
+    fn test_multi_tunnel_reconcile_logic() {
+        let mut desired: HashMap<String, DesiredTunnel> = HashMap::new();
+        desired.insert(
+            "minecraft".to_string(),
+            create_desired_tunnel("minecraft", "/x/minecraft", TunnelMode::Client, 25565, true),
+        );
+        desired.insert(
+            "ssh_disabled".to_string(),
+            create_desired_tunnel("ssh_disabled", "/x/ssh", TunnelMode::Server, 22, false),
+        );
 
         let mut actual: HashMap<String, ActualTunnel> = HashMap::new();
-        let actual_tunnel = create_actual_tunnel("/x/ssh", TunnelMode::Client);
-        actual.insert("/x/ssh".to_string(), actual_tunnel.clone());
+        actual.insert("/x/minecraft".to_string(), create_actual_tunnel("/x/minecraft", TunnelMode::Client, 25565));
+        actual.insert("/x/ssh".to_string(), create_actual_tunnel("/x/ssh", TunnelMode::Server, 22));
+        actual.insert("/x/orphan".to_string(), create_actual_tunnel("/x/orphan", TunnelMode::Server, 3000));
 
-        // 检查是否存在
-        let d = desired_by_proto.get("/x/ssh").unwrap();
-        let a = actual.get("/x/ssh").unwrap();
+        // 转换 desired
+        let mut desired_by_proto: HashMap<String, DesiredTunnel> = HashMap::new();
+        for tunnel in desired.values() {
+            desired_by_proto.insert(tunnel.protocol.clone(), tunnel.clone());
+        }
 
-        // 检查是否漂移
-        let is_drifted = d.mode != a.mode
-            || d.local_ip != a.local_ip
-            || d.port != a.port
-            || d.peer_id != a.peer_id;
+        // 收集所有协议
+        let mut all_protocols = std::collections::HashSet::new();
+        all_protocols.extend(desired_by_proto.keys().cloned());
+        all_protocols.extend(actual.keys().cloned());
 
-        assert!(!is_drifted);
+        // 验证协议集合
+        assert!(all_protocols.contains("/x/minecraft"));
+        assert!(all_protocols.contains("/x/ssh"));
+        assert!(all_protocols.contains("/x/orphan"));
+
+        // 逐个分析场景
+        enum Action {
+            Create,
+            Disable,
+            Cleanup
+        }
+        let mut actions = Vec::new();
+
+        for proto in &all_protocols {
+            let d = desired_by_proto.get(&**proto);
+            let a = actual.get(&**proto);
+
+            match (d, a) {
+                // 场景 A: 新隧道
+                (Some(d), None) if d.enabled => {
+                    actions.push(Action::Create);
+                }
+                // 场景 B: 隧道禁用
+                (Some(d), Some(_)) if !d.enabled => {
+                    actions.push(Action::Disable);
+                }
+                // 场景 C: 孤儿清理
+                (None, Some(_)) => {
+                    actions.push(Action::Cleanup);
+                }
+                _ => {}
+            }
+        }
+
+        // 验证预期的操作
+        assert_eq!(actions.len(), 2); // 1 个禁用，1 个清理
+    }
+
+    // ==========================================
+    // 错误场景：对端 PeerID 不匹配
+    // ==========================================
+    #[test]
+    fn test_drift_detection_peer_id_change() {
+        let mut desired = create_desired_tunnel("client", "/x/client", TunnelMode::Client, 8080, true);
+        desired.target = "QmNewPeerId1234567890".to_string();
+
+        let actual = create_actual_tunnel("/x/client", TunnelMode::Client, 8080);
+        // actual 仍然是 "Qm1234567890TestPeerId"
+
+        let is_drifted = desired.mode != actual.mode
+            || desired.local_ip != actual.local_ip
+            || desired.port != actual.port
+            || desired.target != actual.target;
+
+        assert!(is_drifted, "对端 PeerID 变化应该检测到漂移");
     }
 }

@@ -1,38 +1,54 @@
-Write-Host "=== 开始安装 ipfs-tunnels-manager (Windows 用户后台任务) ===" -ForegroundColor Cyan
+Write-Host "=== 开始安装/更新 ipfs-tunnels-manager (Windows 用户后台任务) ===" -ForegroundColor Cyan
 
-# 1. 检查并编译安装二进制
+# 1. 检查 Rust 环境
 if ((Get-Command "cargo" -ErrorAction SilentlyContinue) -eq $null) {
     Write-Host "错误: 未找到 Rust 环境 (cargo)，请先安装 Rust 工具链。" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "正在本地编译并安装二进制文件..." -ForegroundColor Yellow
-cargo install --path .
+Write-Host "正在编译最新版本..." -ForegroundColor Yellow
+cargo install --path . --force   # 添加 --force 确保更新
 
-# 2. 计算可执行文件的绝对路径 (已修正为 ipfs-tunnels-manager.exe)
 $ExePath = Join-Path $HOME ".cargo\bin\ipfs-tunnels-manager.exe"
 if (-not (Test-Path $ExePath)) {
-    Write-Host "错误: 编译产物未找到，请检查 cargo install 是否成功。" -ForegroundColor Red
+    Write-Host "错误: 编译失败，请检查 cargo 输出。" -ForegroundColor Red
     exit 1
 }
 
-# 3. 使用 Windows 原生命令创建后台计划任务
-Write-Host "正在向系统注册后台常驻任务..." -ForegroundColor Yellow
-
 $TaskName = "IpfsTunnelsManager"
-# 定义触发器：当前用户登录时触发
+
+# 2. 如果任务已存在，先停止它
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host "检测到旧版本任务，正在停止并更新..." -ForegroundColor Yellow
+    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+}
+
+# 3. 注册/更新计划任务
+Write-Host "正在注册后台常驻任务..." -ForegroundColor Yellow
+
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
-# 定义执行动作：运行编译好的二进制文件 (后台隐蔽运行)
 $Action = New-ScheduledTaskAction -Execute $ExePath
-# 定义运行策略：允许电池供电运行，断网不停止，允许无限期运行
-$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365)
+$Settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -ExecutionTimeLimit (New-TimeSpan -Days 365) `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
 
-# 注册任务 (-Principal 确保它以当前登录用户身份静默运行，不会弹窗)
-Register-ScheduledTask -TaskName $TaskName -Trigger $Trigger -Action $Action -Settings $Settings -Description "Declarative IPFS P2P Tunnel Manager" -Force
+Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Trigger $Trigger `
+    -Action $Action `
+    -Settings $Settings `
+    -Description "Declarative IPFS P2P Tunnel Manager" `
+    -Force
 
-# 4. 立即在后台拉起该任务
-Write-Host "正在后台启动服务..." -ForegroundColor Yellow
+# 4. 启动任务
+Write-Host "正在启动服务..." -ForegroundColor Yellow
 Start-ScheduledTask -TaskName $TaskName
 
-Write-Host "=== 安装完成！ ===" -ForegroundColor Green
-Write-Host "提示: 程序已在后台静默运行。你可以在 Windows '任务计划程序' 中随时管理它。" -ForegroundColor Gray
+Write-Host "=== 安装/更新完成！ ===" -ForegroundColor Green
+Write-Host "任务名称: $TaskName" -ForegroundColor Gray
+Write-Host "可执行文件: $ExePath" -ForegroundColor Gray
+Write-Host "管理方式: 打开 Windows '任务计划程序' 搜索 '$TaskName'" -ForegroundColor Gray

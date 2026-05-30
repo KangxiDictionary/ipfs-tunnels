@@ -13,18 +13,22 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13.4", features = ["json", "query"] }
 serde = { version = "1.0", features = ["derive"] }
-futures = "0.3"
-thiserror = "1.0"
+thiserror = "2.0.18"
 tracing = "0.1"
-# 替换基础 subscriber，支持从 RUST_LOG 动态解析复杂的过滤规则
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-dirs = "5.0"
+dirs = "6.0.0"
 anyhow = "1.0"
-# 引入异步文件事件监听
-notify = "6.1"
+notify = "8.2.0"
 sys-locale = "0.3.2"
 multiaddr = "0.18.2"
-urlencoding = "2.1.3"
 tempfile = "3.27.0"
+clap = { version = "4.6.1", features = ["derive"] }
+axum = "0.8.9"
+metrics = "0.24.6"
+metrics-exporter-prometheus = "0.18.3"
+serde_json = "1.0.150"
+
+[dev-dependencies]
+wiremock = "0.6.5"

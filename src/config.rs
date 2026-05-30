@@ -14,8 +14,9 @@ pub fn ensure_config_exists(config_file: &PathBuf) -> anyhow::Result<()> {
     }
     let mut file = File::create(config_file)?;
 
+    // 🟡 修复：配置模板里的注释改为 target（而不是 peer_id）
     let template = "\
-# name | mode | local_ip | port | peer_id | protocol | enabled
+# name | mode | local_ip | port | target | protocol | enabled
 mc_client  | client | 127.0.0.1 | 25565 | 12D3Koo... | /x/minecraft | true
 ssh_server | server | 127.0.0.1 | 22    | -          | /x/ssh       | true
 ";
@@ -74,7 +75,7 @@ pub fn load_desired_state(config_file: &PathBuf) -> anyhow::Result<HashMap<Strin
             }
         };
 
-        let peer_id = parts[4].to_string();
+        let target = parts[4].to_string();
         let protocol = parts[5].to_string();
 
         let enabled = match parts[6].parse() {
@@ -91,7 +92,7 @@ pub fn load_desired_state(config_file: &PathBuf) -> anyhow::Result<HashMap<Strin
             mode,
             local_ip,
             port,
-            peer_id,
+            target,
             protocol,
             enabled,
         };
@@ -122,7 +123,7 @@ mod tests {
         let config_file = temp_dir.path().join("tunnels.conf");
 
         let mut file = File::create(&config_file).unwrap();
-        file.write_all(b"# name | mode | local_ip | port | peer_id | protocol | enabled\n").unwrap();
+        file.write_all(b"# name | mode | local_ip | port | target | protocol | enabled\n").unwrap();
         file.write_all(b"mc_client | client | 127.0.0.1 | 25565 | Qm123... | /x/minecraft | true\n").unwrap();
 
         let result = load_desired_state(&config_file).unwrap();
@@ -136,7 +137,7 @@ mod tests {
         let config_file = temp_dir.path().join("tunnels.conf");
 
         let mut file = File::create(&config_file).unwrap();
-        file.write_all(b"# name | mode | local_ip | port | peer_id | protocol | enabled\n").unwrap();
+        file.write_all(b"# name | mode | local_ip | port | target | protocol | enabled\n").unwrap();
         file.write_all(b"ssh | server | 127.0.0.1 | 22 | - | /x/ssh | true\n").unwrap();
         file.write_all(b"ssh | server | 127.0.0.1 | 23 | - | /x/ssh2 | true\n").unwrap();
 
@@ -151,7 +152,7 @@ mod tests {
         let config_file = temp_dir.path().join("tunnels.conf");
 
         let mut file = File::create(&config_file).unwrap();
-        file.write_all(b"# name | mode | local_ip | port | peer_id | protocol | enabled\n").unwrap();
+        file.write_all(b"# name | mode | local_ip | port | target | protocol | enabled\n").unwrap();
         file.write_all(b"test | client | 127.0.0.1 | invalid | Qm123 | /x/test | true\n").unwrap();
 
         let result = load_desired_state(&config_file).unwrap();

@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
 set -e
 
-echo "=== 开始安装 ipfs-tunnels-manager (Linux 用户服务) ==="
+echo "=== 开始安装/更新 ipfs-tunnels-manager (Linux 用户服务) ==="
 
-# 1. 检查并编译安装二进制
 if ! command -v cargo &> /dev/null; then
-    echo "错误: 未找到 Rust 环境 (cargo)，请先安装 Rust 工具链。"
+    echo "错误: 未找到 Rust 环境 (cargo)..."
     exit 1
 fi
 
-echo "正在本地编译并安装二进制文件..."
-cargo install --path .
+echo "正在编译最新版本..."
+cargo install --path . --force   # 添加 --force 更明确
 
-# 2. 创建用户级 systemd 配置目录
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
 
-# 3. 动态写入 systemd 服务文件 (已修正二进制名称)
-echo "正在配置 systemd 用户服务..."
+echo "正在更新 systemd 服务文件..."
 cat << EOF > "$SERVICE_DIR/ipfs-tunnels-manager.service"
 [Unit]
 Description=Declarative IPFS P2P Tunnel Manager (User Service)
@@ -25,7 +22,6 @@ After=network.target
 
 [Service]
 Type=simple
-# 使用 %h 占位符动态指向当前用户的家目录
 ExecStart=%h/.cargo/bin/ipfs-tunnels-manager
 Restart=on-failure
 RestartSec=5s
@@ -35,11 +31,11 @@ Environment=RUST_LOG=info
 WantedBy=default.target
 EOF
 
-# 4. 激活服务
-echo "正在启动并启用服务..."
+echo "正在重新加载并启动服务..."
 systemctl --user daemon-reload
-systemctl --user enable ipfs-tunnels-manager
+systemctl --user enable --now ipfs-tunnels-manager
 systemctl --user restart ipfs-tunnels-manager
 
-echo "=== 安装完成！ ==="
-echo "提示: 你可以使用 'journalctl --user -u ipfs-tunnels-manager -f' 实时查看后台日志。"
+echo "=== 更新/安装完成！ ==="
+echo "当前运行版本：$(~/.cargo/bin/ipfs-tunnels-manager --version 2>/dev/null || echo '未知')"
+echo "查看日志: journalctl --user -u ipfs-tunnels-manager -f"

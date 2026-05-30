@@ -8,26 +8,18 @@ pub enum Lang {
 
 static CURRENT_LANG: OnceLock<Lang> = OnceLock::new();
 
-/// 初始化语言环境（跨平台获取系统语言）
 pub fn init() {
     let lang = sys_locale::get_locale()
-        .map(|s| {
-            if s.starts_with("zh") {
-                Lang::Zh
-            } else {
-                Lang::En
-            }
-        })
-        .unwrap_or(Lang::En); // 拿不到系统语言时默认英文
+        .map(|s| if s.starts_with("zh") { Lang::Zh } else { Lang::En })
+        .unwrap_or(Lang::En);
     let _ = CURRENT_LANG.set(lang);
 }
 
-/// 获取当前激活的语言
 pub fn get_lang() -> Lang {
     *CURRENT_LANG.get().unwrap_or(&Lang::En)
 }
 
-/// 集中管理所有的日志文本 Key
+#[derive(Debug, Clone, Copy)]
 pub enum LogKey {
     ServiceStarting,
     IpfsConnectError,
@@ -53,62 +45,82 @@ pub enum LogKey {
     TunnelCleaned,
     SigtermReceived,
     SigintReceived,
+    ProtocolConflictAbort,
+    UpdateTeardown,
+    TeardownFailed,
+    ApplyFailedRollback,
+    RollbackSuccess,
+    RollbackInconsistent,
+    PartialSync,
 }
 
-/// 翻译函数
 pub fn tr(key: LogKey) -> &'static str {
     match get_lang() {
         Lang::Zh => match key {
-            LogKey::ServiceStarting => "服务正在启动...",
-            LogKey::IpfsConnectError => "无法连接到本地 IPFS 节点，请检查服务是否运行",
-            LogKey::InitialSync => "正在执行初始状态同步...",
-            LogKey::ConfigChanged => "检测到 tunnels.conf 发生修改，开始同步状态...",
-            LogKey::PeriodicCheck => "执行 60 秒定时状态检查...",
-            LogKey::ServiceStopped => "服务已安全停止。",
-            LogKey::ConfigReadError => "读取配置文件失败，跳过本次同步。",
-            LogKey::PortConflict => "配置错误：端口存在冲突！终止状态同步。",
-            LogKey::IpfsReadError => "无法从 IPFS 读取运行状态，跳过本次同步。",
-            LogKey::SyncComplete => "所有隧道状态同步完成。",
-            LogKey::SyncFailed => "部分隧道同步失败",
-            LogKey::NetworkRetry => "网络请求失败，正在重试...",
-            LogKey::TunnelCreating => "发现新配置，正在创建隧道...",
-            LogKey::TunnelCreated => "隧道创建成功",
-            LogKey::TunnelUpdating => "检测到实际状态与配置不符，正在更新隧道...",
-            LogKey::TunnelRollbackAttempt => "新配置应用失败，正在尝试回滚旧配置...",
-            LogKey::TunnelRollbackFailed => "致命错误：旧配置回滚失败！隧道当前状态可能损坏！",
-            LogKey::TunnelUpdated => "旧隧道更新成功",
-            LogKey::TunnelDisabling => "隧道已在配置中禁用，正在关闭...",
-            LogKey::TunnelDisabled => "解绑关闭成功",
-            LogKey::TunnelCleaning => "发现配置中未定义的残留隧道，正在清理...",
-            LogKey::TunnelCleaned => "残留隧道清理完成",
-            LogKey::SigtermReceived => "接收到 SIGTERM 信号，正在准备安全退出...",
-            LogKey::SigintReceived => "接收到退出指令 (Ctrl+C)，正在准备安全退出...",
+            LogKey::ServiceStarting => "IPFS 隧道后台守护进程正在启动...",
+            LogKey::IpfsConnectError => "无法连接到本地 IPFS 节点 RPC 接口！",
+            LogKey::InitialSync => "正在执行启动期首次状态强制强同步周期...",
+            LogKey::ConfigChanged => "检测到配置文件变更，触发热重载调和周期...",
+            LogKey::PeriodicCheck => "触发定时状态维持与漂移校准周期...",
+            LogKey::ServiceStopped => "守护进程已安全优雅停止下线。",
+            LogKey::ConfigReadError => "读取期望配置失败，本次调和终止。",
+            LogKey::PortConflict => "本地端口冲突！同一端口不可分配给多个隧道。",
+            LogKey::IpfsReadError => "无法从 IPFS 节点读取当前运行状态，跳过本轮同步。",
+            LogKey::SyncComplete => "所有隧道状态同步调和成功，系统处于预期稳态。",
+            LogKey::SyncFailed => "部分隧道同步调和执行失败。",
+            LogKey::NetworkRetry => "网络请求发生网络层异常，正在发起幂等重试...",
+            LogKey::TunnelCreating => "检测到新增隧道配置，正在建立协议流转发...",
+            LogKey::TunnelCreated => "隧道建立成功。",
+            LogKey::TunnelUpdating => "检测到实际运行状态与配置发生漂移，正在启动热更新...",
+            LogKey::TunnelRollbackAttempt => "配置项下发失败！尝试激活事务性安全回滚引擎...",
+            LogKey::TunnelRollbackFailed => "灾难性错误：回滚操作失败！隧道当前状态可能处于不一致的损坏状态！",
+            LogKey::TunnelUpdated => "隧道更新成功。",
+            LogKey::TunnelDisabling => "隧道在配置中已被禁用，正在安全关闭下线...",
+            LogKey::TunnelDisabled => "隧道安全关闭成功。",
+            LogKey::TunnelCleaning => "在节点中检测到未定义的残留冗余隧道，正在强制清洗...",
+            LogKey::TunnelCleaned => "残留冗余隧道清洗成功。",
+            LogKey::SigtermReceived => "接收到 SIGTERM 终止信号，正在准备优雅退出...",
+            LogKey::SigintReceived => "接收到退出指令 (Ctrl+C)，正在准备优雅退出...",
+            LogKey::ProtocolConflictAbort => "致命配置错误：发现了重复分配的全局 P2P 协议流主键，调和器紧急终止！",
+            LogKey::UpdateTeardown => "检测到隧道配置发生变更，正在安全下线旧协议流...",
+            LogKey::TeardownFailed => "解构下线旧隧道流失败，终止后续创建步骤以防拓扑受损！",
+            LogKey::ApplyFailedRollback => "配置项下发失败！正在触发事务性回滚...",
+            LogKey::RollbackSuccess => "回滚旧配置成功，隧道已恢复到上一个稳定运行状态。",
+            LogKey::RollbackInconsistent => "发现回滚操作失败，系统可能处于不一致状态！",
+            LogKey::PartialSync => "本轮调和周期出现部分成功，状态未完全对齐。",
         },
         Lang::En => match key {
-            LogKey::ServiceStarting => "Service is starting...",
-            LogKey::IpfsConnectError => "Failed to connect to local IPFS node, please check if the service is running",
-            LogKey::InitialSync => "Executing initial state synchronization...",
-            LogKey::ConfigChanged => "Detected changes in tunnels.conf, starting state synchronization...",
-            LogKey::PeriodicCheck => "Executing 60-second periodic state check...",
-            LogKey::ServiceStopped => "Service stopped safely.",
-            LogKey::ConfigReadError => "Failed to read configuration file, skipping synchronization.",
-            LogKey::PortConflict => "Configuration error: Port conflict detected! Terminating synchronization.",
+            LogKey::ServiceStarting => "IPFS Tunnel Daemon is starting...",
+            LogKey::IpfsConnectError => "Failed to connect to local IPFS RPC interface!",
+            LogKey::InitialSync => "Executing initial enforcement synchronization cycle...",
+            LogKey::ConfigChanged => "Configuration change detected, triggering hot-reload reconciliation...",
+            LogKey::PeriodicCheck => "Triggering periodic status maintenance and drift calibration cycle...",
+            LogKey::ServiceStopped => "Daemon stopped safely and gracefully.",
+            LogKey::ConfigReadError => "Failed to read desired configuration. Terminating synchronization.",
+            LogKey::PortConflict => "Local port conflict! The same port cannot be assigned to multiple tunnels.",
             LogKey::IpfsReadError => "Failed to read running state from IPFS, skipping synchronization.",
             LogKey::SyncComplete => "All tunnel states synchronized successfully.",
-            LogKey::SyncFailed => "Some tunnels failed to synchronize",
+            LogKey::SyncFailed => "Some tunnels failed to synchronize.",
             LogKey::NetworkRetry => "Network request failed, retrying...",
             LogKey::TunnelCreating => "New configuration found, creating tunnel...",
-            LogKey::TunnelCreated => "Tunnel created successfully",
+            LogKey::TunnelCreated => "Tunnel created successfully.",
             LogKey::TunnelUpdating => "Actual state mismatches configuration, updating tunnel...",
             LogKey::TunnelRollbackAttempt => "Failed to apply new configuration, attempting to roll back to old configuration...",
             LogKey::TunnelRollbackFailed => "Fatal error: Rollback failed! Current tunnel state may be corrupted!",
-            LogKey::TunnelUpdated => "Tunnel updated successfully",
+            LogKey::TunnelUpdated => "Tunnel updated successfully.",
             LogKey::TunnelDisabling => "Tunnel is disabled in configuration, closing...",
-            LogKey::TunnelDisabled => "Tunnel closed successfully",
+            LogKey::TunnelDisabled => "Tunnel closed successfully.",
             LogKey::TunnelCleaning => "Found undefined residual tunnel in configuration, cleaning up...",
-            LogKey::TunnelCleaned => "Residual tunnel cleaned up successfully",
+            LogKey::TunnelCleaned => "Residual tunnel cleaned up successfully.",
             LogKey::SigtermReceived => "Received SIGTERM signal, preparing for graceful exit...",
             LogKey::SigintReceived => "Received exit command (Ctrl+C), preparing for graceful exit...",
+            LogKey::ProtocolConflictAbort => "Fatal configuration error: Duplicate global protocol identifier detected, reconciler aborted!",
+            LogKey::UpdateTeardown => "Tunnel configuration change detected, safely tearing down old protocol stream...",
+            LogKey::TeardownFailed => "Failed to tear down old tunnel stream, aborting subsequent steps to prevent topology corruption!",
+            LogKey::ApplyFailedRollback => "Configuration deployment failed! Triggering transactional rollback...",
+            LogKey::RollbackSuccess => "Old configuration rolled back successfully, tunnel restored to previous stable state.",
+            LogKey::RollbackInconsistent => "Rollback failures detected, system may be in an inconsistent state!",
+            LogKey::PartialSync => "Reconciliation cycle partially successful.",
         }
     }
 }
